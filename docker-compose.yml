@@ -1,7 +1,10 @@
 services:
   api:
-    build: .
+    image: docker.io/smrutijz/safe-god-mode:latest
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - /home/smrut/.claude:/home/agent/.claude:ro
+      - /home/smrut/.claude.json:/home/agent/.claude.json:ro
+    restart: unless-stopped
+    # env_file: .env  # alternative: use ANTHROPIC_API_KEY instead of .claude mount

@@ -1,6 +1,6 @@
 from fastapi import FastAPI
+from src.api.v1 import execute, jobs, stream
 
-from src.api.v1.router import api_router
 
 app = FastAPI(title="safe-god-mode")
 
@@ -10,4 +10,6 @@ async def health():
     return {"status": "ok"}
 
 
-app.include_router(api_router, prefix="/api/v1")
+app.include_router(execute.router, prefix="/api/v1")
+app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(stream.router, prefix="/api/v1")
