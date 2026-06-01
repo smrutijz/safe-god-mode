@@ -1,23 +1,27 @@
-FROM node:20-slim
+FROM python:3.12-slim
 
-# Python for FastAPI + Claude Code CLI
+# gcloud CLI — needed to open IAP tunnels to the remote VM
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-venv git ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code
+        curl apt-transport-https ca-certificates gnupg \
+    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] \
+       https://packages.cloud.google.com/apt cloud-sdk main" \
+       | tee /etc/apt/sources.list.d/google-cloud-sdk.list \
+    && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+       | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
+    && apt-get update && apt-get install -y --no-install-recommends google-cloud-cli \
+    && rm -rf /var/lib/apt/lists/*
 
-# non-root user (claude refuses --dangerously-skip-permissions as root)
-RUN useradd -m agent
-USER agent
-WORKDIR /home/agent/app
+RUN useradd -m app
+USER app
+WORKDIR /home/app/api
 
-ENV PATH="/home/agent/.venv/bin:$PATH"
-RUN python3 -m venv /home/agent/.venv
+ENV PATH="/home/app/.venv/bin:$PATH"
+RUN python -m venv /home/app/.venv
 
-COPY --chown=agent:agent requirements.txt .
+COPY --chown=app:app requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY --chown=agent:agent src/ ./src/
+COPY --chown=app:app src/ ./src/
 
 EXPOSE 8000
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

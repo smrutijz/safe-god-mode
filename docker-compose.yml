@@ -3,8 +3,10 @@ services:
     image: docker.io/smrutijz/safe-god-mode:latest
     ports:
       - "127.0.0.1:8000:8000"
+    env_file: .env
     volumes:
-      - /home/smrut/.claude:/home/agent/.claude:ro
-      - /home/smrut/.claude.json:/home/agent/.claude.json:ro
+      # gcloud credentials for IAP tunnel + Compute API access (when running outside GCP)
+      # Must be read-write so gcloud can refresh access tokens
+      # When running ON a GCE instance, remove this — the instance SA is used automatically
+      - /home/smrut/.config/gcloud:/home/app/.config/gcloud:rw
     restart: unless-stopped
-    # env_file: .env  # alternative: use ANTHROPIC_API_KEY instead of .claude mount
