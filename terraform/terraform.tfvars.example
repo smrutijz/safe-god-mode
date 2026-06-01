@@ -1,0 +1,7 @@
+project_id                = "your-gcp-project-id"
+region                    = "asia-southeast1"
+zone                      = "asia-southeast1-a"
+machine_type              = "e2-micro"
+postgres_db_cidr          = "203.0.113.50/32"
+vm_service_account_email  = "vm-sa@your-project.iam.gserviceaccount.com"
+api_service_account_email = "api-sa@your-project.iam.gserviceaccount.com"
