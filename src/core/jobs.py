@@ -1,8 +1,13 @@
 import asyncio
+import shlex
 import uuid
 from enum import Enum
 from typing import Optional
+
+import asyncssh
+
 from src.core.config import settings
+from src.core.iap import iap_ssh
 
 
 class JobStatus(str, Enum):
@@ -20,8 +25,8 @@ class Job:
         self.prompt: str = prompt
         self.status: JobStatus = JobStatus.pending
         self.code: Optional[int] = None
-        self.lines: list[str] = []                  # full output, for late pollers
-        self._subscribers: list[asyncio.Queue] = []  # live websocket listeners
+        self.lines: list[str] = []
+        self._subscribers: list[asyncio.Queue] = []
         self.done = asyncio.Event()
 
     def emit(self, line: str) -> None:
@@ -64,29 +69,25 @@ store = JobStore()
 
 
 async def run_job(job: Job) -> None:
-    """Run claude to completion, regardless of who is (or isn't) listening.
+    """Open an IAP tunnel, stream claude output line-by-line to all subscribers.
 
-    This is what survives the 15-min gate: the HTTP/WS connection can drop, the
-    job keeps running and buffering output here.
+    The tunnel and SSH session are scoped to this job — they close when claude exits.
+    The HTTP/WS connection can drop at any time; the job keeps running and buffering.
     """
     job.status = JobStatus.running
+    cmd = f"{shlex.quote(settings.claude_bin)} -p {shlex.quote(job.prompt)} --dangerously-skip-permissions"
     try:
-        proc = await asyncio.create_subprocess_exec(
-            settings.claude_bin, "-p", job.prompt, "--dangerously-skip-permissions",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,  # merge so streaming is single-channel
-        )
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
-            job.emit(raw.decode(errors="replace").rstrip("\n"))
-        await proc.wait()
-        job.code = proc.returncode
-        job.status = JobStatus.done if proc.returncode == 0 else JobStatus.error
-    except Exception as exc:  # noqa: BLE001 - surface any spawn/runtime failure
+        async with iap_ssh() as conn:
+            async with conn.create_process(cmd, stderr=asyncssh.STDOUT) as proc:
+                async for raw in proc.stdout:
+                    job.emit(raw.rstrip("\n"))
+            job.code = proc.exit_status or 0
+            job.status = JobStatus.done if job.code == 0 else JobStatus.error
+    except Exception as exc:
         job.emit(f"[runner error] {exc}")
         job.status = JobStatus.error
         job.code = -1
     finally:
         job.done.set()
         for q in list(job._subscribers):
-            q.put_nowait(None)  # tell live listeners the stream ended
+            q.put_nowait(None)

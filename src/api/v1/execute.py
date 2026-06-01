@@ -1,35 +1,36 @@
 import asyncio
-from fastapi import APIRouter, HTTPException
-from src.core.config import settings
-from src.models.schemas import ExecResult, Query
+import shlex
 
+from fastapi import APIRouter, HTTPException
+
+from src.core.config import settings
+from src.core.iap import iap_ssh
+from src.models.schemas import ExecResult, Query
 
 router = APIRouter(tags=["sync"])
 
 
 @router.post("/execute", response_model=ExecResult)
 async def execute(q: Query):
-    """SYNC: blocks until claude exits, then returns the whole output.
+    """SYNC: opens an IAP tunnel, runs claude on the VM, returns the full output.
 
-    Only safe for short runs — the connection is held the entire time, so a run
-    longer than the 15-min gate will be orphaned. Use /jobs for long work.
+    Only safe for short runs — the HTTP connection is held the entire time.
+    Use /jobs for anything that might exceed the 15-min gateway timeout.
     """
-    proc = await asyncio.create_subprocess_exec(
-        settings.claude_bin, "-p", q.prompt, "--dangerously-skip-permissions",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    cmd = f"{shlex.quote(settings.claude_bin)} -p {shlex.quote(q.prompt)} --dangerously-skip-permissions"
     try:
-        out, err = await asyncio.wait_for(
-            proc.communicate(), timeout=q.timeout or settings.sync_timeout
-        )
+        async with iap_ssh() as conn:
+            result = await asyncio.wait_for(
+                conn.run(cmd, check=False),
+                timeout=q.timeout or settings.sync_timeout,
+            )
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
         raise HTTPException(status_code=504, detail="claude run exceeded timeout")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
     return ExecResult(
-        code=proc.returncode or 0,
-        stdout=out.decode(errors="replace"),
-        stderr=err.decode(errors="replace"),
+        code=result.exit_status or 0,
+        stdout=result.stdout,
+        stderr=result.stderr,
     )
