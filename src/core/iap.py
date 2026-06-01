@@ -2,12 +2,11 @@ import asyncio
 import contextlib
 import socket
 from datetime import datetime, timedelta, timezone
-
 import asyncssh
 from google.api_core import exceptions as gcp_exceptions
 from google.cloud import compute_v1
-
 from src.core.config import settings
+
 
 _metadata_lock = asyncio.Lock()
 
@@ -26,15 +25,16 @@ async def _drain(stream) -> None:
         pass
 
 
-async def _wait_tunnel_ready(stderr, timeout: float = 15.0) -> None:
+async def _wait_tunnel_ready(stderr, timeout: float = None) -> None:
     async def _read():
         async for line in stderr:
             if b"Listening on port" in line:
                 return
         raise RuntimeError("gcloud tunnel exited before becoming ready")
 
+    resolved_timeout = timeout if timeout is not None else settings.iap_tunnel_timeout_seconds
     try:
-        await asyncio.wait_for(_read(), timeout=timeout)
+        await asyncio.wait_for(_read(), timeout=resolved_timeout)
     except asyncio.TimeoutError:
         raise RuntimeError("Timed out waiting for IAP tunnel to become ready")
 

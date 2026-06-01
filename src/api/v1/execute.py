@@ -22,7 +22,7 @@ async def execute(q: Query):
         async with iap_ssh() as conn:
             result = await asyncio.wait_for(
                 conn.run(cmd, check=False),
-                timeout=q.timeout or settings.sync_timeout,
+                timeout=q.timeout or settings.sync_timeout_seconds,
             )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="claude run exceeded timeout")

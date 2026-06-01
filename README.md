@@ -22,7 +22,7 @@ per-request ephemeral SSH keys.
 
 Every request:
 1. Generate a throwaway ED25519 key pair in memory
-2. Inject the public key into VM instance metadata (5-min GCP expiry)
+2. Inject the public key into VM instance metadata (GCP expiry = `SSH_KEY_TTL_MINUTES`)
 3. Open `gcloud compute start-iap-tunnel` in parallel with key injection
 4. Connect via asyncssh through the tunnel using the ephemeral private key
 5. Run the command / open the shell; stream output back
@@ -52,7 +52,7 @@ safe-god-mode/
 
 ### API server
 - Python 3.12+
-- `gcloud` CLI installed and authenticated (see step 2 below)
+- `gcloud` CLI installed and authenticated (see step 3 below)
 - GCP account with IAP tunnel + Compute instance metadata permissions
 
 ### VM
@@ -126,7 +126,7 @@ gcloud projects add-iam-policy-binding PROJECT \
 
 ```bash
 cp .env.example .env
-# fill in GCP_PROJECT, GCP_ZONE, VM_NAME, VM_USER
+# fill in all values — every variable is required, server won't start if any is missing
 
 pip install -r requirements.txt
 uvicorn src.main:app --host 127.0.0.1 --port 8000
@@ -165,14 +165,29 @@ docker compose up -d
 
 ## Configuration
 
-| Variable       | Default   | Description                                      |
-|----------------|-----------|--------------------------------------------------|
-| `GCP_PROJECT`  | —         | GCP project ID (**required**)                    |
-| `GCP_ZONE`     | —         | VM zone e.g. `asia-southeast1-a` (**required**)  |
-| `VM_NAME`      | —         | VM instance name (**required**)                  |
-| `VM_USER`      | —         | Linux user on the VM (**required**)              |
-| `CLAUDE_BIN`   | `claude`  | Path to claude CLI on the VM                     |
-| `SYNC_TIMEOUT` | `120`     | Max seconds `/execute` waits before 504          |
+All variables are **required** — copy `.env.example` to `.env` and fill in your values.
+
+| Variable                     | Unit    | What it controls |
+|------------------------------|---------|------------------|
+| `GCP_PROJECT`                | —       | GCP project ID |
+| `GCP_ZONE`                   | —       | VM zone e.g. `asia-southeast1-a` |
+| `VM_NAME`                    | —       | VM instance name |
+| `VM_USER`                    | —       | Linux user on the VM (SSH login user) |
+| `CLAUDE_BIN`                 | —       | Path to the claude CLI on the VM |
+| `SYNC_TIMEOUT_SECONDS`       | seconds | How long `/execute` waits for Claude to finish before returning a 504. Only affects the sync HTTP endpoint — has no effect on `/jobs` or `/ws/terminal`. |
+| `IAP_TUNNEL_TIMEOUT_SECONDS` | seconds | How long to wait for `gcloud` to open the IAP tunnel at the start of every request. If gcloud doesn't respond within this window the request fails immediately. Affects all endpoints. |
+| `SSH_KEY_TTL_MINUTES`        | minutes | How long GCP keeps the ephemeral SSH key in instance metadata as a safety net, in case the server crashes before it can remove the key itself. The key is always removed explicitly on exit — this is only a fallback. |
+
+### Dependency between timeouts
+
+```
+IAP_TUNNEL_TIMEOUT_SECONDS  fires in the first ~15s of every request (connection setup)
+SYNC_TIMEOUT_SECONDS        caps /execute runs only — independent of everything else
+SSH_KEY_TTL_MINUTES         must outlive your longest session — if GCP auto-expires
+                            the key while a session is still running, SSH drops
+```
+
+> **Rule:** `SSH_KEY_TTL_MINUTES` ≥ the longest session you expect (in minutes).
 
 ## Test
 
@@ -186,7 +201,7 @@ curl -s localhost:8000/api/v1/execute \
 
 ## Security notes
 
-- **Ephemeral keys** — no static SSH key on disk. A fresh ED25519 key is generated per request, injected with a 5-min GCP expiry, and removed immediately on exit. A stolen key is useless within seconds.
+- **Ephemeral keys** — no static SSH key on disk. A fresh ED25519 key is generated per request, injected with a configurable GCP expiry (set via `SSH_KEY_TTL_MINUTES`), and removed immediately on exit. A stolen key is useless within seconds.
 - **VM has no public IP** — the only ingress path is IAP (`35.235.240.0/20` → port 22).
 - **API binds to `127.0.0.1`** — put a reverse proxy + SSO in front before exposing publicly.
 - **Claude credentials never in the image** — mounted at runtime on the VM only.
