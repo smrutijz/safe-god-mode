@@ -1,4 +1,8 @@
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
   api:
     image: docker.io/smrutijz/safe-god-mode:latest
     ports:
@@ -6,5 +10,20 @@ services:
     volumes:
       - /home/smrut/.claude:/home/agent/.claude:ro
       - /home/smrut/.claude.json:/home/agent/.claude.json:ro
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
     restart: unless-stopped
-    # env_file: .env  # alternative: use ANTHROPIC_API_KEY instead of .claude mount
+
+  worker:
+    image: docker.io/smrutijz/safe-god-mode:latest
+    command: celery -A src.core.celery_app worker --loglevel=info
+    volumes:
+      - /home/smrut/.claude:/home/agent/.claude:ro
+      - /home/smrut/.claude.json:/home/agent/.claude.json:ro
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    restart: unless-stopped

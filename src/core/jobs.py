@@ -1,9 +1,15 @@
-import asyncio
+import json
+import subprocess
 import uuid
 from enum import Enum
 from typing import Optional
 
+import redis as sync_redis
+
+from src.core.celery_app import app as celery_app
 from src.core.config import settings
+
+STREAM_DONE_SENTINEL = "__done__"
 
 
 class JobStatus(str, Enum):
@@ -13,81 +19,52 @@ class JobStatus(str, Enum):
     error = "error"
 
 
-class Job:
-    """A single Claude Code run plus a fan-out buffer for streaming."""
-
-    def __init__(self, prompt: str):
-        self.id: str = uuid.uuid4().hex
-        self.prompt: str = prompt
-        self.status: JobStatus = JobStatus.pending
-        self.code: Optional[int] = None
-        self.lines: list[str] = []                  # full output, for late pollers
-        self._subscribers: list[asyncio.Queue] = []  # live websocket listeners
-        self.done = asyncio.Event()
-
-    def emit(self, line: str) -> None:
-        self.lines.append(line)
-        for q in self._subscribers:
-            q.put_nowait(line)
-
-    def subscribe(self) -> asyncio.Queue:
-        """Return a queue pre-loaded with backlog; None is the end sentinel."""
-        q: asyncio.Queue = asyncio.Queue()
-        for line in self.lines:
-            q.put_nowait(line)
-        if self.done.is_set():
-            q.put_nowait(None)
-        else:
-            self._subscribers.append(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue) -> None:
-        if q in self._subscribers:
-            self._subscribers.remove(q)
+def _redis() -> sync_redis.Redis:
+    return sync_redis.from_url(settings.redis_url, decode_responses=True)
 
 
-class JobStore:
-    """In-memory store. Jobs are lost on restart — fine for the test stage."""
-
-    def __init__(self):
-        self._jobs: dict[str, Job] = {}
-
-    def create(self, prompt: str) -> Job:
-        job = Job(prompt)
-        self._jobs[job.id] = job
-        return job
-
-    def get(self, job_id: str) -> Optional[Job]:
-        return self._jobs.get(job_id)
+def create_job(prompt: str) -> str:
+    job_id = uuid.uuid4().hex
+    _redis().hset(f"job:{job_id}", mapping={"status": JobStatus.pending, "prompt": prompt, "code": ""})
+    return job_id
 
 
-store = JobStore()
+def get_job_state(job_id: str) -> Optional[dict]:
+    r = _redis()
+    data = r.hgetall(f"job:{job_id}")
+    if not data:
+        return None
+    data["lines"] = r.lrange(f"job:{job_id}:output", 0, -1)
+    return data
 
 
-async def run_job(job: Job) -> None:
-    """Run claude to completion, regardless of who is (or isn't) listening.
-
-    This is what survives the 15-min gate: the HTTP/WS connection can drop, the
-    job keeps running and buffering output here.
-    """
-    job.status = JobStatus.running
+@celery_app.task(name="run_claude")
+def run_claude_task(job_id: str, prompt: str) -> None:
+    r = _redis()
+    channel = f"job:{job_id}:stream"
+    r.hset(f"job:{job_id}", "status", JobStatus.running)
     try:
-        proc = await asyncio.create_subprocess_exec(
-            settings.claude_bin, "-p", job.prompt, "--dangerously-skip-permissions",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,  # merge so streaming is single-channel
+        proc = subprocess.Popen(
+            [settings.claude_bin, "-p", prompt, "--dangerously-skip-permissions"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
         )
         assert proc.stdout is not None
-        async for raw in proc.stdout:
-            job.emit(raw.decode(errors="replace").rstrip("\n"))
-        await proc.wait()
-        job.code = proc.returncode
-        job.status = JobStatus.done if proc.returncode == 0 else JobStatus.error
-    except Exception as exc:  # noqa: BLE001 - surface any spawn/runtime failure
-        job.emit(f"[runner error] {exc}")
-        job.status = JobStatus.error
-        job.code = -1
-    finally:
-        job.done.set()
-        for q in list(job._subscribers):
-            q.put_nowait(None)  # tell live listeners the stream ended
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
+            idx = r.rpush(f"job:{job_id}:output", line) - 1  # 0-based index
+            r.publish(channel, json.dumps({"idx": idx, "data": line}))
+        proc.wait()
+        code = proc.returncode or 0
+        status = JobStatus.done if code == 0 else JobStatus.error
+    except Exception as exc:
+        line = f"[runner error] {exc}"
+        idx = r.rpush(f"job:{job_id}:output", line) - 1
+        r.publish(channel, json.dumps({"idx": idx, "data": line}))
+        code = -1
+        status = JobStatus.error
+
+    r.hset(f"job:{job_id}", mapping={"status": status, "code": code})
+    r.publish(channel, json.dumps({STREAM_DONE_SENTINEL: True, "status": status, "code": code}))
