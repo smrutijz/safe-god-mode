@@ -1,7 +1,5 @@
 from typing import Optional
-
 from pydantic import BaseModel
-
 from src.core.jobs import JobStatus
 
 

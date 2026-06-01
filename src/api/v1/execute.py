@@ -1,9 +1,8 @@
 import asyncio
-
 from fastapi import APIRouter, HTTPException
-
 from src.core.config import settings
 from src.models.schemas import ExecResult, Query
+
 
 router = APIRouter(tags=["sync"])
 

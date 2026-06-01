@@ -1,9 +1,8 @@
 import asyncio
-
 from fastapi import APIRouter, HTTPException
-
 from src.core.jobs import run_job, store
 from src.models.schemas import JobCreated, JobStatusOut, Query
+
 
 router = APIRouter(prefix="/jobs", tags=["async"])
 
